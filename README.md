@@ -15,7 +15,6 @@ The eyes in the painting follow the viewer as they move. Built with JavaScript t
 To use this project simply clone the repository and host it on a local or remote web server. Ensure you have a webcam connected as the tracking relies on real-time video feed.
 
 ## Example Videos
-Check out the example videos included in the repository to see how the project can be used in different settings and how customizable it is. These videos provide demonstrations of various artworks with following eyes, showcasing the potential of this interactive experience.
 
 ## Installation
 1. Clone the repository.
