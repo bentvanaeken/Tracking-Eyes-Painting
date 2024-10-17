@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Tracking Ogen Schilderij</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+    <style>
+        body {
+            background-color: black;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .canvas-container {
+            position: relative;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        video {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="canvas-container">
+        <canvas id="myCanvas" width="2160" height="3840"></canvas>
+    </div>
+    <script>
+        let targetX, targetY;
+        let currentX = 0, currentY = 0;
+        let smoothingFactor = 0.10;
+        let video;
+        let imgBack, imgEyes, imgFront;
+
+        const noPersonTimeout = 5000;
+        let lastPersonDetectedTime = Date.now();
+        let personDetected = false;
+
+        let faceCount = 0;
+        let faceThreshold = 50;
+        let tooManyFaces = false;
+
+        let cocoSsdModel;
+
+        // Variabelen voor oogbeweging
+        let eyeMaxOffsetX = 23;
+        let eyeMaxOffsetUp = 0;
+        let eyeMaxOffsetDown = 18;
+
+        async function setup() {
+            const canvas = document.getElementById('myCanvas');
+            const ctx = canvas.getContext('2d');
+
+            imgBack = new Image();
+            imgBack.src = 'achter man.png';
+
+            imgEyes = new Image();
+            imgEyes.src = 'oogballen.png';
+
+            imgFront = new Image();
+            imgFront.src = 'man portret.png';
+
+            video = document.createElement('video');
+            video.width = 1920;
+            video.height = 1080;
+            video.autoplay = true;
+            video.style.display = 'none';
+            document.body.appendChild(video);
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.play();
+
+                cocoSsdModel = await cocoSsd.load();
+
+                targetX = video.width / 2;
+                targetY = video.height / 2;
+
+                startTracking(ctx, canvas);
+            } catch (error) {
+                console.error("Fout bij toegang tot webcam: ", error);
+            }
+        }
+
+        function startTracking(ctx, canvas) {
+            const pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+            });
+            pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+            });
+            pose.onResults((results) => gotPoses(results, ctx, canvas));
+
+            const camera = new Camera(video, {
+                onFrame: async () => {
+                    await detectPeople();
+
+                    if (!tooManyFaces) {
+                        await pose.send({ image: video });
+                    } else {
+                        targetX = video.width / 2;
+                        targetY = video.height / 2;
+                    }
+                },
+                width: 1920,
+                height: 1080,
+            });
+            camera.start();
+        }
+
+        async function detectPeople() {
+            const predictions = await cocoSsdModel.detect(video);
+
+            faceCount = 0;
+            predictions.forEach(prediction => {
+                if (prediction.class === 'person' && prediction.score > 0.5) {
+                    faceCount++;
+                }
+            });
+
+            tooManyFaces = faceCount > faceThreshold;
+        }
+
+        function gotPoses(results, ctx, canvas) {
+            personDetected = false;
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                const nose = landmarks[0];
+
+                if (nose.visibility > 0.5) {
+                    personDetected = true;
+                    targetX = video.width - (nose.x * video.width);
+                    targetY = nose.y * video.height;
+
+                    lastPersonDetectedTime = Date.now();
+                }
+            }
+
+            if (!personDetected) {
+                checkNoPersonDetected();
+            }
+
+            draw(ctx, canvas, results.poseLandmarks);
+        }
+
+        function checkNoPersonDetected() {
+            const currentTime = Date.now();
+            if (currentTime - lastPersonDetectedTime > noPersonTimeout) {
+                targetX = video.width / 2;
+                targetY = video.height / 2;
+            }
+        }
+
+        function draw(ctx, canvas, landmarks) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (imgBack.complete) {
+                ctx.drawImage(imgBack, 0, 0, canvas.width, canvas.height);
+            }
+
+            let normalizedX = Math.min(Math.max(targetX, 0), video.width);
+            let offsetRatioX = (normalizedX - (video.width / 2)) / (video.width / 2);
+
+            let normalizedY = Math.min(Math.max(targetY, 0), video.height);
+            let offsetRatioY = (normalizedY - (video.height / 2)) / (video.height / 2);
+
+            let targetXOffset = offsetRatioX * eyeMaxOffsetX;
+            currentX += (targetXOffset - currentX) * smoothingFactor;
+
+            let targetYOffset = 0;
+
+            if (offsetRatioY < 0 && eyeMaxOffsetUp > 0) {
+                targetYOffset = offsetRatioY * eyeMaxOffsetUp;
+                targetYOffset = Math.max(-eyeMaxOffsetUp, targetYOffset);
+            } else if (offsetRatioY > 0 && eyeMaxOffsetDown > 0) {
+                targetYOffset = offsetRatioY * eyeMaxOffsetDown;
+                targetYOffset = Math.min(eyeMaxOffsetDown, targetYOffset);
+            }
+
+            currentY += (targetYOffset - currentY) * smoothingFactor;
+
+            const eyeOffsetX = currentX;
+            const eyeOffsetY = currentY;
+
+            if (imgEyes.complete) {
+                ctx.save();
+                ctx.translate(eyeOffsetX, eyeOffsetY);
+                ctx.drawImage(imgEyes, canvas.width / 25 - 80 + eyeOffsetX, canvas.height / 16.5 - 230 + eyeOffsetY);
+                ctx.restore();
+            }
+
+            if (imgFront.complete) {
+                ctx.drawImage(imgFront, 0, 0, canvas.width, canvas.height);
+            }
+
+            /* Visualisatie en debug-informatie 
+
+            if (landmarks && landmarks.length > 0) {
+                for (let i = 0; i < landmarks.length; i++) {
+                    const point = landmarks[i];
+                    const x = video.width - (point.x * video.width);
+                    const y = point.y * video.height;
+                    ctx.beginPath();
+                    ctx.arc(x / video.width * canvas.width, y / video.height * canvas.height, 10, 0, 2 * Math.PI);
+                    ctx.fillStyle = 'red';
+                    ctx.fill();
+                }
+            }
+
+            if (personDetected && landmarks && landmarks[0]) {
+                const nose = landmarks[0];
+                const x = video.width - (nose.x * video.width);
+                const y = nose.y * video.height;
+                ctx.beginPath();
+                ctx.arc(x / video.width * canvas.width, y / video.height * canvas.height, 15, 0, 2 * Math.PI);
+                ctx.fillStyle = 'blue';
+                ctx.fill();
+            }
+
+            ctx.font = '30px Arial';
+            ctx.fillStyle = 'white';
+            ctx.fillText(`Laatste detectie: ${(Date.now() - lastPersonDetectedTime) / 1000}s geleden`, 50, 100);
+            ctx.fillText(`Aantal mensen: ${faceCount}`, 50, 140);
+*/
+        }
+        setup();
+    </script>
+</body>
+
+</html>
